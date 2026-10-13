@@ -1,0 +1,121 @@
+`timescale 1ns/1ps
+
+module lcd_risk_display(
+    input wire clk, input wire rst_n,
+    input wire [1:0] overall_risk,
+    input wire [15:0] heart_rate_bpm,
+    input wire signed [15:0] angle_q8_8,
+    input wire arm_test_active,
+    input wire [3:0] countdown_sec,
+    output wire [7:0] lcd_data,
+    output reg lcd_en, output reg lcd_rs,
+    output wire lcd_rw, lcd_on, lcd_blon
+);
+    assign lcd_rw = 0;
+    assign lcd_on = 1;
+    assign lcd_blon = 1;
+
+    localparam LOAD=3'd0, SETUP=3'd1, ENABLE=3'd2, HOLD=3'd3, ADVANCE=3'd4;
+    reg [2:0] state;
+    reg [2:0] init_index;
+    reg [4:0] char_index;
+    reg line_select, cursor_command;
+    reg [23:0] delay_count;
+    reg [7:0] data_reg, ascii_char;
+    wire [15:0] bpm = (heart_rate_bpm > 999) ? 16'd999 : heart_rate_bpm;
+    wire [15:0] angle_magnitude = angle_q8_8[15] ? (~angle_q8_8 + 16'd1) : angle_q8_8;
+    wire [7:0] angle_degrees = angle_magnitude[15:8];
+    wire [3:0] angle_tenths = (angle_magnitude[7:0] * 10) >> 8;
+    assign lcd_data = data_reg;
+
+    always @* begin
+        ascii_char = " ";
+        if (!line_select) begin
+            case (overall_risk)
+                2'd2: case (char_index)
+                    0:ascii_char="R"; 1:ascii_char="I"; 2:ascii_char="S"; 3:ascii_char="K"; 4:ascii_char=":";
+                    6:ascii_char="H"; 7:ascii_char="I"; 8:ascii_char="G"; 9:ascii_char="H";
+                    default:ascii_char=" ";
+                endcase
+                2'd1: case (char_index)
+                    0:ascii_char="R"; 1:ascii_char="I"; 2:ascii_char="S"; 3:ascii_char="K"; 4:ascii_char=":";
+                    6:ascii_char="M"; 7:ascii_char="O"; 8:ascii_char="D";
+                    default:ascii_char=" ";
+                endcase
+                default: case (char_index)
+                    0:ascii_char="R"; 1:ascii_char="I"; 2:ascii_char="S"; 3:ascii_char="K"; 4:ascii_char=":";
+                    6:ascii_char="L"; 7:ascii_char="O"; 8:ascii_char="W";
+                    default:ascii_char=" ";
+                endcase
+            endcase
+        end else if (arm_test_active) begin
+            case (char_index)
+                0:ascii_char="T"; 1:ascii_char="E"; 2:ascii_char="S"; 3:ascii_char="T"; 4:ascii_char=":";
+                5:ascii_char=(countdown_sec >= 10) ? "1" : "0";
+                6:ascii_char="0" + (countdown_sec % 10);
+                7:ascii_char="s";
+                default:ascii_char=" ";
+            endcase
+        end else begin
+            case (char_index)
+                0:ascii_char="B"; 1:ascii_char="P"; 2:ascii_char="M"; 3:ascii_char=":";
+                4:ascii_char="0" + ((bpm / 100) % 10);
+                5:ascii_char="0" + ((bpm / 10) % 10);
+                6:ascii_char="0" + (bpm % 10);
+                7:ascii_char=" "; 8:ascii_char="A"; 9:ascii_char=":";
+                10:ascii_char=angle_q8_8[15] ? "-" : "+";
+                11:ascii_char="0" + ((angle_degrees / 100) % 10);
+                12:ascii_char="0" + ((angle_degrees / 10) % 10);
+                13:ascii_char="0" + (angle_degrees % 10);
+                14:ascii_char=".";
+                15:ascii_char="0" + angle_tenths;
+                default:ascii_char=" ";
+            endcase
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state <= LOAD; init_index <= 0; char_index <= 0; line_select <= 0;
+            cursor_command <= 0; delay_count <= 2500000;
+            data_reg <= 0; lcd_en <= 0; lcd_rs <= 0;
+        end else if (delay_count != 0) delay_count <= delay_count - 1'b1;
+        else begin
+            case (state)
+                LOAD: begin
+                    if (init_index < 4) begin
+                        lcd_rs <= 0;
+                        case (init_index)
+                            0:data_reg <= 8'h38;
+                            1:data_reg <= 8'h0C;
+                            2:data_reg <= 8'h01;
+                            default:data_reg <= 8'h06;
+                        endcase
+                    end else if (cursor_command) begin
+                        lcd_rs <= 0; data_reg <= line_select ? 8'hC0 : 8'h80;
+                    end else begin
+                        lcd_rs <= 1; data_reg <= ascii_char;
+                    end
+                    state <= SETUP; delay_count <= 2;
+                end
+                SETUP: begin lcd_en <= 1; state <= ENABLE; delay_count <= 50; end
+                ENABLE: begin lcd_en <= 0; state <= HOLD; delay_count <= 250000; end
+                HOLD: state <= ADVANCE;
+                ADVANCE: begin
+                    if (init_index < 4) begin
+                        init_index <= init_index + 1'b1;
+                        if (init_index == 3) cursor_command <= 1;
+                    end else if (cursor_command) begin
+                        cursor_command <= 0; char_index <= 0;
+                    end else if (char_index == 15) begin
+                        char_index <= 0;
+                        if (line_select) begin line_select <= 0; cursor_command <= 1; end
+                        else begin line_select <= 1; cursor_command <= 1; end
+                    end else char_index <= char_index + 1'b1;
+                    state <= LOAD;
+                end
+                default: begin state <= LOAD; delay_count <= 2500000; end
+            endcase
+        end
+    end
+endmodule
